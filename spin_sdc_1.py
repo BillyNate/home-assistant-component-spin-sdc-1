@@ -13,6 +13,7 @@ DISCOVERY_UUID = UUID("9DFACA9D-7801-22A0-9540-F0BB65E824FC")
 SPIN_SERVICE_UUID = UUID("5E5A10D3-6EC7-17AF-D743-3CF1679C1CC7")
 COMMAND_CHARACTERISTIC_UUID = UUID("92E92B18-FA20-D486-5E43-099387C61A71")
 ACTION_CHARACTERISTIC_UUID = UUID("182BEC1F-51A4-458E-4B48-C431EA701A3B")
+PROFILE_ID_CHARACTERISTIC_UUID = "703fe135-0056-7398-1c4f-42e1636c2fd8"
 UUID_CLIENT_CHARACTERISTIC_CONFIG = UUID("00002902-0000-1000-8000-00805f9b34fb")
 
 DOMAIN = 'spin_sdc_1'
@@ -65,7 +66,12 @@ class NotificationDelegate(DefaultDelegate):
     def handleNotification(self, cHandle, data):
         global EVENT_SPIN_NOTIFICATION_RECEIVED
         global ACTION_TO_STRING
-        self.hass.bus.fire(EVENT_SPIN_NOTIFICATION_RECEIVED, { 'action': ACTION_TO_STRING[ord(data)] })
+
+        if cHandle == 0x30: # Action
+            self.hass.bus.fire(EVENT_SPIN_NOTIFICATION_RECEIVED, { 'action': ACTION_TO_STRING[ord(data)] })
+        elif cHandle == 0x3c: # Profile change
+            self.hass.bus.fire('state_changed', { 'new_state': data[0] })
+            #self.hass.async_add_job(self.async_update_ha_state())
 
 @asyncio.coroutine
 def async_setup(hass, config):
@@ -82,6 +88,9 @@ def async_setup(hass, config):
 
     @asyncio.coroutine
     def start_receiving_notifications(hass, peripheral):
+        nonlocal checking_devices
+        nonlocal connected_to_device
+
         while True:
             try:
                 hasNotification = yield from hass.loop.run_in_executor(None, peripheral.waitForNotifications, 1.0)
@@ -90,11 +99,15 @@ def async_setup(hass, config):
                 checking_devices = False
                 connected_to_device = False
 
+            if not connected_to_device:
+                break
+
     @asyncio.coroutine
     def async_handle_spin(device, peripheral=None):
         nonlocal connected_to_device
         global COMMAND_CHARACTERISTIC_UUID
         global ACTION_CHARACTERISTIC_UUID
+        global PROFILE_ID_CHARACTERISTIC_UUID
         global UUID_CLIENT_CHARACTERISTIC_CONFIG
 
         if not peripheral:
@@ -109,29 +122,30 @@ def async_setup(hass, config):
 
             for service in services:
                 if service.uuid == SPIN_SERVICE_UUID:
-                    # Look for the characteristic to send commands to
                     commandCharacteristic = service.getCharacteristics(COMMAND_CHARACTERISTIC_UUID)
                     if commandCharacteristic:
                         for i in range(0, 3):
                             commandCharacteristic[0].write(struct.pack('<bBBB', 0x09, 0xFF, 0x00, 0x00), True)
                             time.sleep(.5)
-                            commandCharacteristic[0].write(struct.pack('<b', 0x07), True)
+                            commandCharacteristic[0].write(struct.pack('<b', 0x07), True) # or use 0x06 to switch profiles ;)
                             time.sleep(.5)
 
-                    # Look for the characteristic to receive actions from
+                    _LOGGER.info("Turning notifications on")
                     actionCharacteristic = service.getCharacteristics(ACTION_CHARACTERISTIC_UUID)
-                    if actionCharacteristic and commandCharacteristic:
+                    profile_idCharacteristic = service.getCharacteristics(PROFILE_ID_CHARACTERISTIC_UUID)
 
-                        _LOGGER.info("Turning notifications on")
-
-                        # Get config descriptor
+                    if actionCharacteristic:
                         descriptors = actionCharacteristic[0].getDescriptors(UUID_CLIENT_CHARACTERISTIC_CONFIG)
+                        descriptors[0].write(struct.pack('<bb', 0x01, 0x00), True)
 
-                        # Enable notifications
-                        commandCharacteristic[0].write(struct.pack('<bb', 0x08, 0x01), True)
+                    if profile_idCharacteristic:
+                        profile_id = profile_idCharacteristic[0].read()
+                        descriptors = profile_idCharacteristic[0].getDescriptors(UUID_CLIENT_CHARACTERISTIC_CONFIG)
                         descriptors[0].write(struct.pack('<bb', 0x01, 0x00), True)
                     
-                    #yield from hass.loop.run_in_executor(None, start_receiving_notifications, hass, peripheral)
+                    if commandCharacteristic:
+                        commandCharacteristic[0].write(struct.pack('<bb', 0x08, 0x01), True)
+
                     peripheral.withDelegate(NotificationDelegate(hass))
                     hass.async_add_job(start_receiving_notifications, hass, peripheral)
 
