@@ -1,19 +1,35 @@
+"""Support for the SPIN SDC 1 Remote
+
+SPIN Remote is a device to remote control all kind of appliances.
+It does this through its motions sensor and touchpad,
+it has built-in Infra Red and Bluetooth.
+Unfortunately the SPIN company hasn't disclosed an IR API, so we won't be able to control this part,
+but setting up a Bluetooth connection and listen for notifications has been disclosed, so we can use the remote as a sensor now!
+Hopefully the API will be extended to support IR soon ;)
+
+This platform will only support one SPIN SDC 1 at the moment,
+supoort for multiple SPINs may be added later.
+"""
+
 import asyncio
 import homeassistant.util.dt as dt_util
 import logging
 import os
 import struct
 import time
-from bluepy.btle import Scanner, DefaultDelegate, Peripheral, UUID, BTLEException
 from datetime import timedelta
+from bluepy.btle import DefaultDelegate, UUID
+from homeassistant.const import CONF_ID
 from homeassistant.config import load_yaml_config_file
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.event import async_track_time_interval
+
 
 DISCOVERY_UUID = UUID("9DFACA9D-7801-22A0-9540-F0BB65E824FC")
 SPIN_SERVICE_UUID = UUID("5E5A10D3-6EC7-17AF-D743-3CF1679C1CC7")
 COMMAND_CHARACTERISTIC_UUID = UUID("92E92B18-FA20-D486-5E43-099387C61A71")
 ACTION_CHARACTERISTIC_UUID = UUID("182BEC1F-51A4-458E-4B48-C431EA701A3B")
-PROFILE_ID_CHARACTERISTIC_UUID = "703fe135-0056-7398-1c4f-42e1636c2fd8"
+PROFILE_ID_CHARACTERISTIC_UUID = UUID("703fe135-0056-7398-1c4f-42e1636c2fd8")
 UUID_CLIENT_CHARACTERISTIC_CONFIG = UUID("00002902-0000-1000-8000-00805f9b34fb")
 
 DOMAIN = 'spin_sdc_1'
@@ -55,39 +71,24 @@ ACTION_TO_STRING = [
     'spin_wake_up'
 ]
 
-class NotificationDelegate(DefaultDelegate):
-    """
-    If a notification is received, it will be handled by the handleNotification def in here
-    """
-    def __init__(self, hass):
-        DefaultDelegate.__init__(self)
-        self.hass = hass
-
-    def handleNotification(self, cHandle, data):
-        global EVENT_SPIN_NOTIFICATION_RECEIVED
-        global ACTION_TO_STRING
-
-        if cHandle == 0x30: # Action
-            self.hass.bus.fire(EVENT_SPIN_NOTIFICATION_RECEIVED, { 'action': ACTION_TO_STRING[ord(data)] })
-        elif cHandle == 0x3c: # Profile change
-            self.hass.bus.fire('state_changed', { 'new_state': data[0] })
-            #self.hass.async_add_job(self.async_update_ha_state())
-
 @asyncio.coroutine
-def async_setup(hass, config):
+def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     """Setup SPIN remote(s)."""
-    bl_dev = config[DOMAIN].get('device', DEFAULT_DEVICE)
-    scan_timeout = config[DOMAIN].get('scan_timeout', DEFAULT_SCAN_TIMEOUT)
+
+    from bluepy.btle import Scanner, Peripheral, BTLEException
+
+    bl_dev = config.get('device', DEFAULT_DEVICE)
+    scan_timeout = config.get('scan_timeout', DEFAULT_SCAN_TIMEOUT)
     checking_devices = False
     connected_to_device = False
     known_device_adresses = []
-    spin_device_addresses = []
-    spins = []
+    spins = {}
 
     # Would be a nice moment to check if bl_dev is even valid.
 
     @asyncio.coroutine
     def start_receiving_notifications(hass, peripheral):
+        """Loop to receive notifications"""
         nonlocal checking_devices
         nonlocal connected_to_device
 
@@ -104,7 +105,9 @@ def async_setup(hass, config):
 
     @asyncio.coroutine
     def async_handle_spin(device, peripheral=None):
+        """Prepare SPIN remote to be used by HASS"""
         nonlocal connected_to_device
+        nonlocal spins
         global COMMAND_CHARACTERISTIC_UUID
         global ACTION_CHARACTERISTIC_UUID
         global PROFILE_ID_CHARACTERISTIC_UUID
@@ -142,19 +145,21 @@ def async_setup(hass, config):
                         profile_id = profile_idCharacteristic[0].read()
                         descriptors = profile_idCharacteristic[0].getDescriptors(UUID_CLIENT_CHARACTERISTIC_CONFIG)
                         descriptors[0].write(struct.pack('<bb', 0x01, 0x00), True)
+                        spins[list(spins.keys())[0]]['entity'].profile_update(profile_id[0])
                     
                     if commandCharacteristic:
                         commandCharacteristic[0].write(struct.pack('<bb', 0x08, 0x01), True)
 
-                    peripheral.withDelegate(NotificationDelegate(hass))
+                    peripheral.withDelegate(NotificationDelegate(hass, spins))
                     hass.async_add_job(start_receiving_notifications, hass, peripheral)
 
     @asyncio.coroutine
     def async_new_device_found(device):
+        """Check if the newly found BLE device is a SPIN"""
         nonlocal checking_devices
         nonlocal connected_to_device
         nonlocal known_device_adresses
-        nonlocal spin_device_addresses
+        nonlocal spins
         global DISCOVERY_UUID
         global SPIN_SERVICE_UUID
         global COMMAND_CHARACTERISTIC_UUID
@@ -166,16 +171,16 @@ def async_setup(hass, config):
         try:
             peripheral = yield from hass.loop.run_in_executor(None, Peripheral, device)
             services = yield from hass.loop.run_in_executor(None, peripheral.getServices)
-            #peripheral = Peripheral(device)
-            #services = peripheral.getServices()
 
-            if not device.addr in spin_device_addresses:
+            if not device.addr in spins:
                 # Walk through the list of services to see if one of them matches the DISCOVERY_UUID
                 for service in services:
                     if service.uuid == DISCOVERY_UUID:
-                        spins.append({ 'device': device, 'peripheral': peripheral })
-                        spin_device_addresses.append(device.addr)
+                        dev_id = config.get(CONF_ID)
+                        sdc1 = SDC1("Spin", "connected")
+                        spins[device.addr] = { 'device': device, 'peripheral': peripheral, 'entity': sdc1 }
                         connected_to_device = True
+                        yield from async_add_devices([sdc1])
                         _LOGGER.info("Connected to BLE device " + device.addr)
 
             known_device_adresses.append(device.addr)
@@ -192,6 +197,7 @@ def async_setup(hass, config):
 
     @asyncio.coroutine
     def async_on_time_interval(now: dt_util.dt.datetime):
+        """Start scanning for BLE devices"""
         nonlocal scan_timeout
         nonlocal known_device_adresses
         nonlocal checking_devices
@@ -211,7 +217,7 @@ def async_setup(hass, config):
             for device in devices:
                 if not device.addr in known_device_adresses:
                     yield from async_new_device_found(device)
-                elif device.addr in spin_device_addresses:
+                elif device.addr in spins:
                     _LOGGER.info("SPIN found, reconnecting...")
                     yield from async_handle_spin(device)
             checking_devices = False
@@ -221,19 +227,57 @@ def async_setup(hass, config):
     # Because we sometimes get into trouble if we start searching to early; we'll start once Home Assistant is ready
     @asyncio.coroutine
     def async_on_homeassistant_start(event):
+        """Once Home Assistant is started, we'll scan every 30 seconds"""
         interval = timedelta(seconds=30)
         remove_on_time_interval = async_track_time_interval(hass, async_on_time_interval, interval)
         hass.async_add_job(async_on_time_interval, None)
 
     hass.bus.async_listen_once('homeassistant_start', async_on_homeassistant_start)
 
-    
-    # This code is not async!:
-#    if not spins:
-#        hass.states.set('SPIN.Found', 'No devices')
-#    else:
-#        for i in range(len(spins)):
-#            # create new panel for each SPIN remote
-#            hass.states.set('SPIN.' + str(i), spins[i]['device'].addr)
-
     return True
+
+class SDC1(Entity):
+    """Representation of a SPIN-SDC-1."""
+
+    def __init__(self, name, state):
+        """Initialize the sensor."""
+        self._name = name
+        self._state = state
+
+    @property
+    def name(self):
+        """Return the name of the sensor."""
+        return self._name
+
+    @property
+    def state(self):
+        """Return the state of the sensor."""
+        return self._state
+
+    def action_notification(self, action):
+        """Fire an event when an action notification has been received"""
+        global EVENT_SPIN_NOTIFICATION_RECEIVED
+        self.hass.bus.fire(EVENT_SPIN_NOTIFICATION_RECEIVED, { 'entity_id': self.entity_id, 'action': action })
+
+    def profile_update(self, profile_id):
+        """Set state based on profile_id"""
+        self._state = 'profile_' + str(profile_id)
+        self.hass.async_run_job(self.async_update_ha_state)
+
+
+class NotificationDelegate(DefaultDelegate):
+    """
+    If a notification is received, it will be handled by the handleNotification def in here
+    """
+    def __init__(self, hass, spins):
+        DefaultDelegate.__init__(self)
+        self.hass = hass
+        self.spins = spins
+
+    def handleNotification(self, cHandle, data):
+        global ACTION_TO_STRING
+
+        if cHandle == 0x30: # Action
+            self.spins[list(self.spins.keys())[0]]['entity'].action_notification(ACTION_TO_STRING[ord(data)])
+        elif cHandle == 0x3c: # Profile change
+            self.spins[list(self.spins.keys())[0]]['entity'].profile_update(data[0])
