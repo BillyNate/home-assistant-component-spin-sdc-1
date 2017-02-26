@@ -43,6 +43,8 @@ ATTR_DEVICE = 'device'
 DEFAULT_DEVICE = 0
 ATTR_PROFILE = 'profile'
 DEFAULT_PROFILE = 'profile_0'
+ATTR_SCAN_INTERVAL = 'scan_interval'
+DEFAULT_SCAN_INTERVAL = 30.0
 ATTR_SCAN_TIMEOUT = 'scan_timeout'
 DEFAULT_SCAN_TIMEOUT = 10.0
 
@@ -83,6 +85,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     from bluepy.btle import Scanner, Peripheral, BTLEException
 
     bl_dev = config.get(ATTR_DEVICE, DEFAULT_DEVICE)
+    scan_interval = config.get(ATTR_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     scan_timeout = config.get(ATTR_SCAN_TIMEOUT, DEFAULT_SCAN_TIMEOUT)
     checking_devices = False
     connected_to_device = False
@@ -234,8 +237,9 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     # Because we sometimes get into trouble if we start searching to early; we'll start once Home Assistant is ready
     @asyncio.coroutine
     def async_on_homeassistant_start(event):
-        """Once Home Assistant is started, we'll scan every 30 seconds"""
-        interval = timedelta(seconds=30)
+        """Once Home Assistant is started, we'll scan every 30 seconds or so"""
+        nonlocal scan_interval
+        interval = timedelta(seconds=scan_interval)
         remove_on_time_interval = async_track_time_interval(hass, async_on_time_interval, interval)
         hass.async_add_job(async_on_time_interval, None)
 
