@@ -15,6 +15,7 @@ import asyncio
 import homeassistant.util.dt as dt_util
 import logging
 import os
+import re
 import struct
 import time
 from datetime import timedelta
@@ -38,7 +39,11 @@ EVENT_SPIN_NOTIFICATION_RECEIVED = 'spin_notification_received'
 
 REQUIREMENTS = ['http://github.com/IanHarvey/bluepy/archive/586c284b8b332def7d7cf397e06d2a5fdeb4ac14.zip#bluepy==1.0.5']
 
+ATTR_DEVICE = 'device'
 DEFAULT_DEVICE = 0
+ATTR_PROFILE = 'profile'
+DEFAULT_PROFILE = 'profile_0'
+ATTR_SCAN_TIMEOUT = 'scan_timeout'
 DEFAULT_SCAN_TIMEOUT = 10.0
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,8 +82,8 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
 
     from bluepy.btle import Scanner, Peripheral, BTLEException
 
-    bl_dev = config.get('device', DEFAULT_DEVICE)
-    scan_timeout = config.get('scan_timeout', DEFAULT_SCAN_TIMEOUT)
+    bl_dev = config.get(ATTR_DEVICE, DEFAULT_DEVICE)
+    scan_timeout = config.get(ATTR_SCAN_TIMEOUT, DEFAULT_SCAN_TIMEOUT)
     checking_devices = False
     connected_to_device = False
     known_device_adresses = []
@@ -233,6 +238,26 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         hass.async_add_job(async_on_time_interval, None)
 
     hass.bus.async_listen_once('homeassistant_start', async_on_homeassistant_start)
+
+    @asyncio.coroutine
+    def async_handle_service(call):
+        """Handle service calls"""
+        nonlocal spins
+        profileRegex = r"profile_(\d+)"
+        profile = call.data.get(ATTR_PROFILE, DEFAULT_PROFILE) # Default to current profile?
+        match = re.search(profileRegex, profile)
+
+        if match:
+            peripheral = spins[list(spins.keys())[0]]['peripheral']
+            services = yield from hass.loop.run_in_executor(None, peripheral.getServices)
+            for service in services:
+                if service.uuid == SPIN_SERVICE_UUID:
+                    profile_idCharacteristic = service.getCharacteristics(PROFILE_ID_CHARACTERISTIC_UUID)
+                    if profile_idCharacteristic:
+                        profile_idCharacteristic[0].write(struct.pack('<b', int(match.group(1))), True)
+                        spins[list(spins.keys())[0]]['entity'].profile_update(int(match.group(1)))
+
+    hass.services.async_register(DOMAIN, 'profile', async_handle_service, description=None)
 
     return True
 
