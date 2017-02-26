@@ -135,18 +135,11 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
 
             for service in services:
                 if service.uuid == SPIN_SERVICE_UUID:
-                    commandCharacteristic = service.getCharacteristics(COMMAND_CHARACTERISTIC_UUID)
-                    if commandCharacteristic:
-                        for i in range(0, 3):
-                            commandCharacteristic[0].write(struct.pack('<bBBB', 0x09, 0xFF, 0x00, 0x00), True)
-                            time.sleep(.5)
-                            commandCharacteristic[0].write(struct.pack('<b', 0x07), True) # or use 0x06 to switch profiles ;)
-                            time.sleep(.5)
-
-                    _LOGGER.info("Turning notifications on")
                     actionCharacteristic = service.getCharacteristics(ACTION_CHARACTERISTIC_UUID)
                     profile_idCharacteristic = service.getCharacteristics(PROFILE_ID_CHARACTERISTIC_UUID)
+                    commandCharacteristic = service.getCharacteristics(COMMAND_CHARACTERISTIC_UUID)
 
+                    _LOGGER.info("Turning notifications on")
                     if actionCharacteristic:
                         descriptors = actionCharacteristic[0].getDescriptors(UUID_CLIENT_CHARACTERISTIC_CONFIG)
                         descriptors[0].write(struct.pack('<bb', 0x01, 0x00), True)
@@ -186,12 +179,14 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                 # Walk through the list of services to see if one of them matches the DISCOVERY_UUID
                 for service in services:
                     if service.uuid == DISCOVERY_UUID:
-                        dev_id = config.get(CONF_ID)
                         sdc1 = SDC1("Spin", "connected")
                         spins[device.addr] = { 'device': device, 'peripheral': peripheral, 'entity': sdc1 }
                         connected_to_device = True
                         yield from async_add_devices([sdc1])
                         _LOGGER.info("Connected to BLE device " + device.addr)
+            else:
+                spins[device.addr]['device'] = device
+                spins[device.addr]['peripheral'] = peripheral
 
             known_device_adresses.append(device.addr)
 
@@ -254,8 +249,8 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_on_homeassistant_stop)
 
     @asyncio.coroutine
-    def async_handle_service(call):
-        """Handle service calls"""
+    def async_handle_profile_service(call):
+        """Handle profile service calls"""
         nonlocal spins
         profileRegex = r"profile_(\d+)"
         profile = call.data.get(ATTR_PROFILE, DEFAULT_PROFILE) # Default to current profile?
@@ -271,7 +266,25 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                         profile_idCharacteristic[0].write(struct.pack('<b', int(match.group(1))), True)
                         spins[list(spins.keys())[0]]['entity'].profile_update(int(match.group(1)))
 
-    hass.services.async_register(DOMAIN, 'profile', async_handle_service, description=None)
+    @asyncio.coroutine
+    def async_handle_color_service(call):
+        """Handle LED color service calls"""
+        nonlocal spins
+        red, green, blue = call.data.get('rgb_color', [0, 0, 0])
+        
+        peripheral = spins[list(spins.keys())[0]]['peripheral']
+        services = yield from hass.loop.run_in_executor(None, peripheral.getServices)
+        for service in services:
+            if service.uuid == SPIN_SERVICE_UUID:
+                commandCharacteristic = service.getCharacteristics(COMMAND_CHARACTERISTIC_UUID)
+                if commandCharacteristic:
+                    if red + green + blue < 1:
+                        commandCharacteristic[0].write(struct.pack('<b', 0x07), True) # Remove forced LED color
+                    else:
+                        commandCharacteristic[0].write(struct.pack('<bBBB', 0x09, red, green, blue), True)
+
+    hass.services.async_register(DOMAIN, 'profile', async_handle_profile_service, description=None)
+    hass.services.async_register(DOMAIN, 'rgb_color', async_handle_color_service, description=None)
 
     return True
 
