@@ -20,7 +20,7 @@ import struct
 import time
 from datetime import timedelta
 from bluepy.btle import DefaultDelegate, UUID
-from homeassistant.const import CONF_ID
+from homeassistant.const import CONF_ID, EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP
 from homeassistant.config import load_yaml_config_file
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.event import async_track_time_interval
@@ -86,6 +86,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     scan_timeout = config.get(ATTR_SCAN_TIMEOUT, DEFAULT_SCAN_TIMEOUT)
     checking_devices = False
     connected_to_device = False
+    homeassistant_stopped = False
     known_device_adresses = []
     spins = {}
 
@@ -96,8 +97,9 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         """Loop to receive notifications"""
         nonlocal checking_devices
         nonlocal connected_to_device
+        nonlocal homeassistant_stopped
 
-        while True:
+        while not homeassistant_stopped:
             try:
                 hasNotification = yield from hass.loop.run_in_executor(None, peripheral.waitForNotifications, 1.0)
             except (BTLEException, AttributeError) as error:
@@ -237,7 +239,15 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         remove_on_time_interval = async_track_time_interval(hass, async_on_time_interval, interval)
         hass.async_add_job(async_on_time_interval, None)
 
-    hass.bus.async_listen_once('homeassistant_start', async_on_homeassistant_start)
+    @asyncio.coroutine
+    def async_on_homeassistant_stop(event):
+        """Once Home Assistant stops, prevent further futures from being created"""
+        nonlocal homeassistant_stopped
+        homeassistant_stopped = True
+
+    # Add listeners:
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, async_on_homeassistant_start)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_on_homeassistant_stop)
 
     @asyncio.coroutine
     def async_handle_service(call):
