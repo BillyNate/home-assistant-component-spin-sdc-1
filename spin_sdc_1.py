@@ -92,6 +92,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     homeassistant_stopped = False
     known_device_adresses = []
     spins = {}
+    entities = {}
 
     # Would be a nice moment to check if bl_dev is even valid.
 
@@ -163,6 +164,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         nonlocal connected_to_device
         nonlocal known_device_adresses
         nonlocal spins
+        nonlocal entities
         global DISCOVERY_UUID
         global SPIN_SERVICE_UUID
         global COMMAND_CHARACTERISTIC_UUID
@@ -179,14 +181,16 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                 # Walk through the list of services to see if one of them matches the DISCOVERY_UUID
                 for service in services:
                     if service.uuid == DISCOVERY_UUID:
-                        sdc1 = SDC1("Spin", "connected")
+                        sdc1 = SDC1('spin', 'connected', device.addr)
                         spins[device.addr] = { 'device': device, 'peripheral': peripheral, 'entity': sdc1 }
+                        entities['sensor.' + sdc1.name] = sdc1
                         connected_to_device = True
                         yield from async_add_devices([sdc1])
                         _LOGGER.info("Connected to BLE device " + device.addr)
             else:
                 spins[device.addr]['device'] = device
                 spins[device.addr]['peripheral'] = peripheral
+                spins[device.addr]['entity'].is_connected(True)
 
             known_device_adresses.append(device.addr)
 
@@ -255,24 +259,27 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         profileRegex = r"profile_(\d+)"
         profile = call.data.get(ATTR_PROFILE, DEFAULT_PROFILE) # Default to current profile?
         match = re.search(profileRegex, profile)
+        entity_ids = call.data.get('entity_id')
 
         if match:
-            peripheral = spins[list(spins.keys())[0]]['peripheral']
+            peripheral = spins[entities[entity_ids[0]].address]['peripheral']
             services = yield from hass.loop.run_in_executor(None, peripheral.getServices)
             for service in services:
                 if service.uuid == SPIN_SERVICE_UUID:
                     profile_idCharacteristic = service.getCharacteristics(PROFILE_ID_CHARACTERISTIC_UUID)
                     if profile_idCharacteristic:
                         profile_idCharacteristic[0].write(struct.pack('<b', int(match.group(1))), True)
-                        spins[list(spins.keys())[0]]['entity'].profile_update(int(match.group(1)))
+                        spins[entities[entity_ids[0]].address]['entity'].profile_update(int(match.group(1)))
 
     @asyncio.coroutine
     def async_handle_color_service(call):
         """Handle LED color service calls"""
         nonlocal spins
+        nonlocal entities
         red, green, blue = call.data.get('rgb_color', [0, 0, 0])
+        entity_ids = call.data.get('entity_id')
         
-        peripheral = spins[list(spins.keys())[0]]['peripheral']
+        peripheral = spins[entities[entity_ids[0]].address]['peripheral']
         services = yield from hass.loop.run_in_executor(None, peripheral.getServices)
         for service in services:
             if service.uuid == SPIN_SERVICE_UUID:
@@ -283,28 +290,34 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                     else:
                         commandCharacteristic[0].write(struct.pack('<bBBB', 0x09, red, green, blue), True)
 
-    hass.services.async_register(DOMAIN, 'profile', async_handle_profile_service, description=None)
-    hass.services.async_register(DOMAIN, 'rgb_color', async_handle_color_service, description=None)
+    hass.services.async_register(DOMAIN, 'profile', async_handle_profile_service)
+    hass.services.async_register(DOMAIN, 'rgb_color', async_handle_color_service)
 
     return True
 
 class SDC1(Entity):
-    """Representation of a SPIN-SDC-1."""
+    """Representation of a SPIN-SDC-1"""
 
-    def __init__(self, name, state):
-        """Initialize the sensor."""
+    def __init__(self, name, state, address):
+        """Initialize the sensor"""
         self._name = name
         self._state = state
+        self._address = address
 
     @property
     def name(self):
-        """Return the name of the sensor."""
+        """Return the name of the sensor"""
         return self._name
 
     @property
     def state(self):
-        """Return the state of the sensor."""
+        """Return the state of the sensor"""
         return self._state
+
+    @property
+    def address(self):
+        """Return the MAC address of the sensor"""
+        return self._address
 
     def action_notification(self, action):
         """Fire an event when an action notification has been received"""
@@ -314,6 +327,14 @@ class SDC1(Entity):
     def profile_update(self, profile_id):
         """Set state based on profile_id"""
         self._state = 'profile_' + str(profile_id)
+        self.hass.async_run_job(self.async_update_ha_state)
+
+    def is_connected(self, connected):
+        """Set state based on connection"""
+        if connected:
+            self._state = 'connected'
+        else:
+            self._state = 'disconnected'
         self.hass.async_run_job(self.async_update_ha_state)
 
 
