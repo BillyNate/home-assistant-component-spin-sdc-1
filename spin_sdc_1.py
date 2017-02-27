@@ -97,11 +97,12 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     # Would be a nice moment to check if bl_dev is even valid.
 
     @asyncio.coroutine
-    def start_receiving_notifications(hass, peripheral):
+    def start_receiving_notifications(hass, device, peripheral):
         """Loop to receive notifications"""
         nonlocal checking_devices
         nonlocal connected_to_device
         nonlocal homeassistant_stopped
+        nonlocal spins
 
         while not homeassistant_stopped:
             try:
@@ -112,6 +113,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                 connected_to_device = False
 
             if not connected_to_device:
+                spins[device.addr]['entity'].is_connected(False)
                 break
 
     @asyncio.coroutine
@@ -127,6 +129,9 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         if not peripheral:
             try:
                 peripheral = yield from hass.loop.run_in_executor(None, Peripheral, device)
+                spins[device.addr]['device'] = device
+                spins[device.addr]['peripheral'] = peripheral
+                spins[device.addr]['entity'].is_connected(True)
             except BTLEException as error:
                 _LOGGER.warning(error)
 
@@ -155,7 +160,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                         commandCharacteristic[0].write(struct.pack('<bb', 0x08, 0x01), True)
 
                     peripheral.withDelegate(NotificationDelegate(hass, spins[device.addr]))
-                    hass.async_add_job(start_receiving_notifications, hass, peripheral)
+                    hass.async_add_job(start_receiving_notifications, hass, device, peripheral)
 
     @asyncio.coroutine
     def async_new_device_found(device):
@@ -187,10 +192,6 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                         connected_to_device = True
                         yield from async_add_devices([sdc1])
                         _LOGGER.info("Connected to BLE device " + device.addr)
-            else:
-                spins[device.addr]['device'] = device
-                spins[device.addr]['peripheral'] = peripheral
-                spins[device.addr]['entity'].is_connected(True)
 
             known_device_adresses.append(device.addr)
 
