@@ -148,12 +148,12 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                         profile_id = profile_idCharacteristic[0].read()
                         descriptors = profile_idCharacteristic[0].getDescriptors(UUID_CLIENT_CHARACTERISTIC_CONFIG)
                         descriptors[0].write(struct.pack('<bb', 0x01, 0x00), True)
-                        spins[list(spins.keys())[0]]['entity'].profile_update(profile_id[0])
+                        spins[device.addr]['entity'].profile_update(profile_id[0])
                     
                     if commandCharacteristic:
                         commandCharacteristic[0].write(struct.pack('<bb', 0x08, 0x01), True)
 
-                    peripheral.withDelegate(NotificationDelegate(hass, spins))
+                    peripheral.withDelegate(NotificationDelegate(hass, spins[device.addr]))
                     hass.async_add_job(start_receiving_notifications, hass, peripheral)
 
     @asyncio.coroutine
@@ -321,15 +321,15 @@ class NotificationDelegate(DefaultDelegate):
     """
     If a notification is received, it will be handled by the handleNotification def in here
     """
-    def __init__(self, hass, spins):
+    def __init__(self, hass, spin):
         DefaultDelegate.__init__(self)
         self.hass = hass
-        self.spins = spins
+        self.spin = spin
 
     def handleNotification(self, cHandle, data):
         global ACTION_TO_STRING
 
         if cHandle == 0x30: # Action
-            self.spins[list(self.spins.keys())[0]]['entity'].action_notification(ACTION_TO_STRING[ord(data)])
+            self.spin['entity'].action_notification(ACTION_TO_STRING[ord(data)])
         elif cHandle == 0x3c: # Profile change
-            self.spins[list(self.spins.keys())[0]]['entity'].profile_update(data[0])
+            self.spin['entity'].profile_update(data[0])
