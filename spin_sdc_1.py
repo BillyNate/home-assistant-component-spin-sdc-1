@@ -19,6 +19,7 @@ import re
 import struct
 import time
 from datetime import timedelta
+from custom_components.spin_remote import DOMAIN
 from homeassistant.const import CONF_ID, EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP
 from homeassistant.config import load_yaml_config_file
 from homeassistant.helpers.entity import Entity
@@ -31,8 +32,6 @@ COMMAND_CHARACTERISTIC_UUID = '92E92B18-FA20-D486-5E43-099387C61A71'
 ACTION_CHARACTERISTIC_UUID = '182BEC1F-51A4-458E-4B48-C431EA701A3B'
 PROFILE_ID_CHARACTERISTIC_UUID = '703fe135-0056-7398-1c4f-42e1636c2fd8'
 UUID_CLIENT_CHARACTERISTIC_CONFIG = '00002902-0000-1000-8000-00805f9b34fb'
-
-DOMAIN = 'spin_sdc_1'
 
 EVENT_SPIN_NOTIFICATION_RECEIVED = 'spin_notification_received'
 
@@ -202,9 +201,9 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
                 # Walk through the list of services to see if one of them matches the DISCOVERY_UUID
                 for service in services:
                     if service.uuid == DISCOVERY_UUID:
-                        sdc1 = SDC1('spin', 'connected', device.addr)
+                        sdc1 = SDC1('spin_' + str(len(spins) + 1), 'connected', device.addr)
                         spins[device.addr] = { 'device': device, 'peripheral': peripheral, 'entity': sdc1 }
-                        entities['sensor.' + sdc1.name] = sdc1
+                        entities[DOMAIN + '.' + sdc1.name] = sdc1
                         connected_to_device = True
                         yield from async_add_devices([sdc1])
                         _LOGGER.info("Connected to BLE device " + device.addr)
@@ -316,24 +315,24 @@ class SDC1(Entity):
     """Representation of a SPIN-SDC-1"""
 
     def __init__(self, name, state, address):
-        """Initialize the sensor"""
+        """Initialize the spin_sdc_1"""
         self._name = name
         self._state = state
         self._address = address
 
     @property
     def name(self):
-        """Return the name of the sensor"""
+        """Return the name of the spin_sdc_1"""
         return self._name
 
     @property
     def state(self):
-        """Return the state of the sensor"""
+        """Return the state of the spin_sdc_1"""
         return self._state
 
     @property
     def address(self):
-        """Return the MAC address of the sensor"""
+        """Return the MAC address of the spin_sdc_1"""
         return self._address
 
     def action_notification(self, action):
