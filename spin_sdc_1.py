@@ -19,19 +19,18 @@ import re
 import struct
 import time
 from datetime import timedelta
-from bluepy.btle import DefaultDelegate, UUID
 from homeassistant.const import CONF_ID, EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP
 from homeassistant.config import load_yaml_config_file
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.event import async_track_time_interval
 
 
-DISCOVERY_UUID = UUID("9DFACA9D-7801-22A0-9540-F0BB65E824FC")
-SPIN_SERVICE_UUID = UUID("5E5A10D3-6EC7-17AF-D743-3CF1679C1CC7")
-COMMAND_CHARACTERISTIC_UUID = UUID("92E92B18-FA20-D486-5E43-099387C61A71")
-ACTION_CHARACTERISTIC_UUID = UUID("182BEC1F-51A4-458E-4B48-C431EA701A3B")
-PROFILE_ID_CHARACTERISTIC_UUID = UUID("703fe135-0056-7398-1c4f-42e1636c2fd8")
-UUID_CLIENT_CHARACTERISTIC_CONFIG = UUID("00002902-0000-1000-8000-00805f9b34fb")
+DISCOVERY_UUID = '9DFACA9D-7801-22A0-9540-F0BB65E824FC'
+SPIN_SERVICE_UUID = '5E5A10D3-6EC7-17AF-D743-3CF1679C1CC7'
+COMMAND_CHARACTERISTIC_UUID = '92E92B18-FA20-D486-5E43-099387C61A71'
+ACTION_CHARACTERISTIC_UUID = '182BEC1F-51A4-458E-4B48-C431EA701A3B'
+PROFILE_ID_CHARACTERISTIC_UUID = '703fe135-0056-7398-1c4f-42e1636c2fd8'
+UUID_CLIENT_CHARACTERISTIC_CONFIG = '00002902-0000-1000-8000-00805f9b34fb'
 
 DOMAIN = 'spin_sdc_1'
 
@@ -82,7 +81,7 @@ ACTION_TO_STRING = [
 def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     """Setup SPIN remote(s)."""
 
-    from bluepy.btle import Scanner, Peripheral, BTLEException
+    from bluepy.btle import BTLEException, DefaultDelegate, Peripheral, Scanner
 
     bl_dev = config.get(ATTR_DEVICE, DEFAULT_DEVICE)
     scan_interval = config.get(ATTR_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -95,6 +94,23 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     entities = {}
 
     # Would be a nice moment to check if bl_dev is even valid.
+    
+    class NotificationDelegate(DefaultDelegate):
+        """
+        If a notification is received, it will be handled by the handleNotification def in here
+        """
+        def __init__(self, hass, spin):
+            DefaultDelegate.__init__(self)
+            self.hass = hass
+            self.spin = spin
+
+        def handleNotification(self, cHandle, data):
+            global ACTION_TO_STRING
+
+            if cHandle == 0x30: # Action
+                self.spin['entity'].action_notification(ACTION_TO_STRING[ord(data)])
+            elif cHandle == 0x3c: # Profile change
+                self.spin['entity'].profile_update(data[0])
 
     @asyncio.coroutine
     def start_receiving_notifications(hass, device, peripheral):
@@ -337,21 +353,3 @@ class SDC1(Entity):
         else:
             self._state = 'disconnected'
         self.hass.async_run_job(self.async_update_ha_state)
-
-
-class NotificationDelegate(DefaultDelegate):
-    """
-    If a notification is received, it will be handled by the handleNotification def in here
-    """
-    def __init__(self, hass, spin):
-        DefaultDelegate.__init__(self)
-        self.hass = hass
-        self.spin = spin
-
-    def handleNotification(self, cHandle, data):
-        global ACTION_TO_STRING
-
-        if cHandle == 0x30: # Action
-            self.spin['entity'].action_notification(ACTION_TO_STRING[ord(data)])
-        elif cHandle == 0x3c: # Profile change
-            self.spin['entity'].profile_update(data[0])
